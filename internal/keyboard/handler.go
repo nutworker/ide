@@ -69,6 +69,12 @@ func (h *Handler) setupBindings() {
 		return nil
 	})
 
+	// Close current window
+	h.cbind.Set("Alt+x", func(ev *tcell.EventKey) *tcell.EventKey {
+		h.handleCloseWindow()
+		return nil
+	})
+
 	// Quit
 	h.cbind.Set("Alt+q", func(ev *tcell.EventKey) *tcell.EventKey {
 		h.handleQuit()
@@ -167,6 +173,13 @@ func (h *Handler) handleRun() {
 
 	if err := h.goHandler.Run(activeWin); err != nil {
 		// Show error - for now just ignore
+	}
+}
+
+func (h *Handler) handleCloseWindow() {
+	if err := h.wm.CloseActive(); err != nil {
+		// Error - cannot close (probably last window)
+		// Could show error in status line
 	}
 }
 

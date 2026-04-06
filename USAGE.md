@@ -19,11 +19,20 @@ Simply run:
 
 This will launch the IDE with a bash shell in a white background terminal window.
 
+## Mouse Support
+
+### Scrolling
+- **Mouse Wheel Up** - Scroll up through output (3 lines)
+- **Mouse Wheel Down** - Scroll down through output (3 lines)
+- Works in: Shell windows, build output, run output
+- Disabled in: Vi editing mode (use vi's native scrolling)
+
 ## Key Bindings
 
 ### Window Management
-- `ALT+h` - Split current window horizontally
-- `ALT+v` - Split current window vertically
+- `ALT+h` - Split current window horizontally (bash→bash, vi→vi with same file)
+- `ALT+v` - Split current window vertically (bash→bash, vi→vi with same file)
+- `ALT+x` - Close current window (space reclaimed by parent window)
 - `ALT+t` - Toggle to previously active window
 - `ALT+1` through `ALT+8` - Jump to window number
 

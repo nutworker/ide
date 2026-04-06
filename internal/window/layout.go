@@ -10,6 +10,7 @@ type LayoutNode struct {
 	Window   *Window
 	Split    SplitType
 	Children [2]*LayoutNode
+	Parent   *LayoutNode
 	Rect     Rect
 }
 
@@ -70,11 +71,13 @@ func (l *Layout) SplitNode(node *LayoutNode, splitType SplitType, newWindow *Win
 		Window: node.Window,
 		Split:  SplitNone,
 		Rect:   rect1,
+		Parent: node,
 	}
 	node.Children[1] = &LayoutNode{
 		Window: newWindow,
 		Split:  SplitNone,
 		Rect:   rect2,
+		Parent: node,
 	}
 	node.Window = nil
 
@@ -146,6 +149,54 @@ func (l *Layout) resizeNodeRecursive(node *LayoutNode, rect Rect) {
 		l.resizeNodeRecursive(node.Children[0], rect1)
 		l.resizeNodeRecursive(node.Children[1], rect2)
 	}
+}
+
+// RemoveWindow removes a window and reclaims its space
+func (l *Layout) RemoveWindow(windowID int) *Window {
+	node := l.FindNode(windowID)
+	if node == nil || node.Window == nil {
+		return nil
+	}
+
+	parent := node.Parent
+	if parent == nil {
+		// Cannot remove root window
+		return nil
+	}
+
+	// Find sibling (the other child of parent)
+	var sibling *LayoutNode
+	if parent.Children[0] == node {
+		sibling = parent.Children[1]
+	} else {
+		sibling = parent.Children[0]
+	}
+
+	// Get the window that will reclaim space (from sibling subtree)
+	var siblingWindow *Window
+	if sibling.Window != nil {
+		siblingWindow = sibling.Window
+	}
+
+	// Replace parent with sibling (sibling takes parent's space)
+	parent.Window = sibling.Window
+	parent.Split = sibling.Split
+	parent.Children = sibling.Children
+
+	// Update parent references for children
+	if parent.Split != SplitNone {
+		if parent.Children[0] != nil {
+			parent.Children[0].Parent = parent
+		}
+		if parent.Children[1] != nil {
+			parent.Children[1].Parent = parent
+		}
+	}
+
+	// Resize the sibling (or its subtree) to fill parent's space
+	l.resizeNodeRecursive(parent, parent.Rect)
+
+	return siblingWindow
 }
 
 // GetAllWindows returns all windows in the layout

@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-
 	"github.com/gdamore/tcell/v2"
 	"github.com/nutworker/ide/internal/window"
 )
@@ -12,14 +10,16 @@ type Renderer struct {
 	screen    tcell.Screen
 	theme     *Theme
 	statusBar *StatusBar
+	selection *Selection
 }
 
 // NewRenderer creates a new renderer
-func NewRenderer(screen tcell.Screen, theme *Theme) *Renderer {
+func NewRenderer(screen tcell.Screen, theme *Theme, selection *Selection) *Renderer {
 	return &Renderer{
 		screen:    screen,
 		theme:     theme,
 		statusBar: NewStatusBar(theme),
+		selection: selection,
 	}
 }
 
@@ -40,51 +40,22 @@ func (r *Renderer) Render(wm *window.Manager) {
 
 // renderWindow renders a single window
 func (r *Renderer) renderWindow(win *window.Window, windowNum int, isActive bool) {
-	// Draw window number in top-left corner
-	r.drawWindowNumber(win, windowNum, isActive)
-
 	// Draw window content
 	r.drawWindowContent(win)
 
-	// Draw status bar if this is a vi window
-	if win.State.IsVi {
-		r.statusBar.Render(r.screen, win)
-	}
+	// Always draw status bar (with window number)
+	r.statusBar.Render(r.screen, win, windowNum)
 
-	// Draw border (simple line separators)
+	// Draw borders between windows
 	r.drawWindowBorder(win)
-}
-
-// drawWindowNumber draws the window number
-func (r *Renderer) drawWindowNumber(win *window.Window, num int, isActive bool) {
-	numStr := fmt.Sprintf(" %d ", num)
-	style := r.theme.WindowNum()
-
-	if !isActive {
-		// Dim the style for inactive windows
-		style = style.Dim(true)
-	}
-
-	x := win.Rect.X
-	y := win.Rect.Y
-
-	for i, ch := range numStr {
-		if x+i < win.Rect.X+win.Rect.Width {
-			r.screen.SetContent(x+i, y, ch, nil, style)
-		}
-	}
 }
 
 // drawWindowContent draws the window's terminal content
 func (r *Renderer) drawWindowContent(win *window.Window) {
 	lines := win.GetLines()
 
-	startY := win.Rect.Y + 1 // Start below window number
-	maxHeight := win.Rect.Height - 1
-
-	if win.State.IsVi {
-		maxHeight-- // Reserve space for status bar
-	}
+	startY := win.Rect.Y // Start from top of window
+	maxHeight := win.Rect.Height - 1 // Reserve space for status bar (always present)
 
 	for lineIdx, line := range lines {
 		if lineIdx >= maxHeight {
@@ -99,7 +70,14 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 				break
 			}
 
-			r.screen.SetContent(x+colIdx, y, cell.Rune, nil, cell.Style)
+			style := cell.Style
+			// Check if this position is in selection
+			if r.selection != nil && r.selection.IsInSelection(x+colIdx, y) {
+				// Highlight selected text with reverse video
+				style = style.Reverse(true)
+			}
+
+			r.screen.SetContent(x+colIdx, y, cell.Rune, nil, style)
 		}
 
 		// Fill remaining space with default style
@@ -119,27 +97,27 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 	}
 }
 
-// drawWindowBorder draws simple borders between windows
+// drawWindowBorder draws borders between windows
 func (r *Renderer) drawWindowBorder(win *window.Window) {
-	// Draw a simple line at the right edge if not at screen edge
-	// This is a minimal border - we can enhance later
+	screenW, screenH := r.screen.Size()
 	style := r.theme.Default().Reverse(true)
 
-	// Right edge
-	screenW, screenH := r.screen.Size()
-	if win.Rect.X+win.Rect.Width < screenW {
-		x := win.Rect.X + win.Rect.Width - 1
-		for y := win.Rect.Y; y < win.Rect.Y+win.Rect.Height; y++ {
-			r.screen.SetContent(x, y, '│', nil, style)
+	// Draw right edge border (vertical line) at the rightmost column of this window
+	rightX := win.Rect.X + win.Rect.Width - 1
+	if rightX < screenW-1 { // Only if there's potentially another window to the right
+		// Draw from top to bottom, excluding status bar
+		for y := win.Rect.Y; y < win.Rect.Y+win.Rect.Height-1; y++ {
+			r.screen.SetContent(rightX, y, '│', nil, style)
 		}
 	}
 
-	// Bottom edge
-	y := win.Rect.Y + win.Rect.Height - 1
-	if y < screenH-1 {
+	// Draw bottom edge border (horizontal line) just below this window
+	bottomY := win.Rect.Y + win.Rect.Height
+	if bottomY < screenH { // Only if there's potentially another window below
+		// Draw from left to right
 		for x := win.Rect.X; x < win.Rect.X+win.Rect.Width; x++ {
 			if x < screenW {
-				r.screen.SetContent(x, y, '─', nil, style)
+				r.screen.SetContent(x, bottomY, '─', nil, style)
 			}
 		}
 	}

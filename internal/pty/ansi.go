@@ -1,7 +1,6 @@
 package pty
 
 import (
-	"bytes"
 	"regexp"
 	"strconv"
 	"unicode/utf8"
@@ -87,17 +86,24 @@ func (p *ANSIParser) ParseLine(data []byte) Line {
 
 // stripANSI removes ANSI escape sequences (simplified)
 func (p *ANSIParser) stripANSI(data []byte) []byte {
-	// Remove CSI sequences (ESC[...)
-	csiRegex := regexp.MustCompile(`\x1b\[[^m]*m`)
-	data = csiRegex.ReplaceAll(data, nil)
+	// Remove color/style sequences (ESC[...m)
+	colorRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	data = colorRegex.ReplaceAll(data, nil)
 
-	// Remove other escape sequences
-	escRegex := regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
-	data = escRegex.ReplaceAll(data, nil)
+	// Remove terminal title sequences
+	titleRegex := regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+	data = titleRegex.ReplaceAll(data, nil)
 
-	// Remove cursor movement sequences
-	cursorRegex := regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	// Remove cursor movement and positioning sequences
+	// ESC[nA (up), ESC[nB (down), ESC[nC (forward), ESC[nD (backward)
+	// ESC[n;nH (position), ESC[nJ (clear), ESC[nK (clear line)
+	cursorRegex := regexp.MustCompile(`\x1b\[[0-9;]*[ABCDHJKfhlm]`)
 	data = cursorRegex.ReplaceAll(data, nil)
 
-	return bytes.TrimRight(data, "\r\n")
+	// Remove other control sequences
+	otherRegex := regexp.MustCompile(`\x1b\[[?0-9;]*[a-zA-Z]`)
+	data = otherRegex.ReplaceAll(data, nil)
+
+	// Don't trim - preserve content
+	return data
 }

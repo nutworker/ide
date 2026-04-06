@@ -20,21 +20,24 @@ func NewStatusBar(theme *Theme) *StatusBar {
 }
 
 // Render renders the status bar for a window
-func (sb *StatusBar) Render(screen tcell.Screen, win *window.Window) {
-	if !win.State.IsVi {
-		return
-	}
-
+func (sb *StatusBar) Render(screen tcell.Screen, win *window.Window, windowNum int) {
 	// Status bar at bottom of window
 	y := win.Rect.Y + win.Rect.Height - 1
 	x := win.Rect.X
 
-	// Format: "filename.go [12,45] -- INSERT --"
-	status := fmt.Sprintf(" %s [%d,%d] -- %s -- ",
-		win.State.Filename,
-		win.State.CursorRow,
-		win.State.CursorCol,
-		win.State.ViMode)
+	var status string
+	if win.State.IsVi {
+		// Vi mode: show window number, filename, cursor position, mode
+		status = fmt.Sprintf("[%d] %s [%d,%d] --%s--",
+			windowNum,
+			win.State.Filename,
+			win.State.CursorRow,
+			win.State.CursorCol,
+			win.State.ViMode)
+	} else {
+		// Shell mode: show window number only
+		status = fmt.Sprintf("[%d]", windowNum)
+	}
 
 	// Render with status bar style
 	style := sb.theme.StatusBar()

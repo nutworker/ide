@@ -10,6 +10,7 @@ A lightweight terminal-based IDE with Emacs-like appearance, designed for Go pro
 - **Go language support**: Build, run, and navigate compilation errors
 - **Keyboard-driven**: ALT-based commands for all IDE functions
 - **Auto-save**: Files are automatically saved before build/run commands
+- **Mouse scrolling**: Scroll through shell and output windows with mouse wheel
 
 ## Quick Start
 
@@ -42,6 +43,7 @@ See [USAGE.md](USAGE.md) for detailed documentation.
 |---------|----------|
 | ALT+h | Split window horizontally |
 | ALT+v | Split window vertically |
+| ALT+x | Close current window |
 | ALT+t | Toggle to previous window |
 | ALT+1-8 | Jump to window number |
 | ALT+b | Build current Go file |

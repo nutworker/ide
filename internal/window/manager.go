@@ -122,11 +122,14 @@ func (m *Manager) SplitActive(splitType SplitType, command string, args ...strin
 	newWindow := NewWindow(m.nextID, activeWin.Rect, m.defaultStyle)
 	m.nextID++
 
-	// If splitting a vi window, use the same file
+	// If splitting a vi window, use the same file in the new window
+	// Otherwise, use the provided command (default is bash)
 	if activeWin.State.IsVi && command == "/bin/bash" {
 		command = "vi"
 		if activeWin.State.Filename != "" {
 			args = []string{activeWin.State.Filename}
+		} else {
+			args = []string{}
 		}
 	}
 
@@ -158,6 +161,59 @@ func (m *Manager) ResizeAll(width, height int) {
 	if m.layout != nil {
 		m.layout.ResizeAll(NewRect(0, 0, width, height-1))
 	}
+}
+
+// CloseActive closes the active window and gives space to parent
+func (m *Manager) CloseActive() error {
+	if len(m.windows) <= 1 {
+		return fmt.Errorf("cannot close the last window")
+	}
+
+	activeWin := m.GetActiveWindow()
+	if activeWin == nil {
+		return fmt.Errorf("no active window")
+	}
+
+	// Remove from layout and get the window that reclaims the space
+	siblingWin := m.layout.RemoveWindow(activeWin.ID)
+
+	// Close the window
+	activeWin.Close()
+
+	// Remove from windows list
+	newWindows := make([]*Window, 0, len(m.windows)-1)
+	for i, w := range m.windows {
+		if w.ID != activeWin.ID {
+			newWindows = append(newWindows, w)
+		} else if i < m.activeIdx {
+			m.activeIdx--
+		}
+	}
+	m.windows = newWindows
+
+	// Set focus to the sibling window (the one that reclaimed space)
+	if siblingWin != nil {
+		m.SetActiveByID(siblingWin.ID)
+	} else if m.activeIdx >= len(m.windows) {
+		m.activeIdx = len(m.windows) - 1
+	}
+
+	// Adjust prevIdx
+	if m.prevIdx >= len(m.windows) {
+		m.prevIdx = m.activeIdx
+	}
+
+	return nil
+}
+
+// GetWindowAtPosition returns the window at the given screen coordinates
+func (m *Manager) GetWindowAtPosition(x, y int) *Window {
+	for _, w := range m.windows {
+		if w.IsPointInside(x, y) {
+			return w
+		}
+	}
+	return nil
 }
 
 // CloseAll closes all windows
