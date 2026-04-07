@@ -12,6 +12,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
 	ptyparser "github.com/nutworker/ide/internal/pty"
+	"golang.org/x/sys/unix"
 )
 
 // Window represents a single window in the IDE
@@ -24,32 +25,37 @@ type Window struct {
 	ProcessType ProcessType
 	SourceFile  string // For build/run output windows
 
-	// Terminal buffer - using simple line-based approach
-	rawBuffer   []byte // Raw output buffer
-	mutex       sync.RWMutex
-	parser      *ptyparser.ANSIParser
-	scrollback  int // How many lines scrolled back
-	maxBytes    int // Maximum buffer size
+	// Terminal emulator
+	terminal   *ptyparser.Terminal
+	mutex      sync.RWMutex
+	parser     *ptyparser.ANSIParser
+	scrollback int // How many lines scrolled back
 }
 
 // NewWindow creates a new window
 func NewWindow(id int, rect Rect, defaultStyle tcell.Style) *Window {
+	// Reserve space for status bar
+	termHeight := rect.Height - 1
+	if termHeight < 1 {
+		termHeight = 1
+	}
+
 	return &Window{
 		ID:          id,
 		Rect:        rect,
 		State:       NewWindowState(),
 		ProcessType: ProcessShell,
-		rawBuffer:   make([]byte, 0, 65536),
+		terminal:    ptyparser.NewTerminal(rect.Width, termHeight, defaultStyle),
 		parser:      ptyparser.NewANSIParser(defaultStyle),
-		maxBytes:    1048576, // 1MB buffer
 	}
 }
 
 // StartPTY starts a PTY with the given command
 func (w *Window) StartPTY(command string, args ...string) error {
+	var bashRcFile string
+
 	// For bash, create a custom rcfile to set up our prompt cleanly
-	if command == "/bin/bash" || command == "bash" {
-		// Create a temporary rcfile
+	if (command == "/bin/bash" || command == "bash") && len(args) == 0 {
 		rcContent := `# Source user's bashrc if it exists
 if [ -f ~/.bashrc ]; then
     source ~/.bashrc
@@ -87,15 +93,16 @@ clear
 			os.Remove(tmpfile.Name())
 			return fmt.Errorf("failed to write temp rcfile: %w", err)
 		}
+		bashRcFile = tmpfile.Name()
 		tmpfile.Close()
 
-		// Start bash with our custom rcfile
-		args = append([]string{"--rcfile", tmpfile.Name()}, args...)
+		// Use --rcfile to load our custom rc
+		args = []string{"--rcfile", bashRcFile}
 
-		// Clean up the temp file after a delay (bash will have read it by then)
+		// Clean up temp file after delay
 		go func() {
 			time.Sleep(2 * time.Second)
-			os.Remove(tmpfile.Name())
+			os.Remove(bashRcFile)
 		}()
 	}
 
@@ -111,6 +118,23 @@ clear
 		return fmt.Errorf("failed to start PTY: %w", err)
 	}
 
+	// Set terminal to raw mode for readline support
+	termios, err := unix.IoctlGetTermios(int(ptyFile.Fd()), unix.TCGETS)
+	if err == nil {
+		// Disable canonical mode - readline needs raw mode
+		termios.Lflag &^= unix.ICANON
+		// Keep echo on and signal handling
+		termios.Lflag |= unix.ECHO | unix.ISIG
+		// Enable CR-NL mapping for proper newlines
+		termios.Iflag |= unix.ICRNL
+		termios.Oflag |= unix.OPOST | unix.ONLCR
+		// Set minimum characters to return immediately
+		termios.Cc[unix.VMIN] = 1
+		termios.Cc[unix.VTIME] = 0
+
+		unix.IoctlSetTermios(int(ptyFile.Fd()), unix.TCSETS, termios)
+	}
+
 	w.PTY = ptyFile
 	w.Cmd = cmd
 
@@ -121,7 +145,6 @@ clear
 
 	return nil
 }
-
 // ResizePTY resizes the PTY to match the window rectangle
 func (w *Window) ResizePTY() error {
 	if w.PTY == nil {
@@ -141,6 +164,12 @@ func (w *Window) ResizePTY() error {
 		cols = 1
 	}
 
+	// Resize terminal emulator buffer
+	w.mutex.Lock()
+	w.terminal.Resize(cols, rows)
+	w.mutex.Unlock()
+
+	// Resize PTY
 	err := pty.Setsize(w.PTY, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
@@ -212,14 +241,8 @@ func (w *Window) processOutput(data []byte) {
 		}
 	}
 
-	// Append data to raw buffer
-	w.rawBuffer = append(w.rawBuffer, data...)
-
-	// Limit buffer size
-	if len(w.rawBuffer) > w.maxBytes {
-		// Keep only the last maxBytes/2 to avoid frequent trimming
-		w.rawBuffer = w.rawBuffer[len(w.rawBuffer)-w.maxBytes/2:]
-	}
+	// Write data to terminal emulator
+	w.terminal.Write(data)
 }
 
 // GetLines returns the visible lines for rendering
@@ -227,67 +250,10 @@ func (w *Window) GetLines() []ptyparser.Line {
 	w.mutex.RLock()
 	defer w.mutex.RUnlock()
 
-	// Split buffer into lines
-	lines := w.splitIntoLines(w.rawBuffer)
+	// Get all lines from terminal emulator
+	lines := w.terminal.GetLines()
 
-	// Calculate visible height (always reserve space for status bar)
-	height := w.Rect.Height - 1
-
-	// If we have fewer lines than height, return all lines
-	if len(lines) <= height {
-		return lines
-	}
-
-	// Get last N lines (scrollback-aware)
-	start := len(lines) - height - w.scrollback
-	if start < 0 {
-		start = 0
-	}
-
-	end := len(lines) - w.scrollback
-	if end > len(lines) {
-		end = len(lines)
-	}
-	if end < 0 {
-		end = 0
-	}
-
-	if start >= end {
-		return []ptyparser.Line{}
-	}
-
-	return lines[start:end]
-}
-
-// splitIntoLines splits raw buffer into lines, handling wrapping
-func (w *Window) splitIntoLines(data []byte) []ptyparser.Line {
-	var lines []ptyparser.Line
-	var currentLine []byte
-
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-
-		switch b {
-		case '\n':
-			// Add current line
-			line := w.parser.ParseLine(currentLine)
-			lines = append(lines, line)
-			currentLine = nil
-
-		case '\r':
-			// Carriage return - typically followed by \n, ignore
-
-		default:
-			currentLine = append(currentLine, b)
-		}
-	}
-
-	// Add remaining line if any
-	if len(currentLine) > 0 {
-		line := w.parser.ParseLine(currentLine)
-		lines = append(lines, line)
-	}
-
+	// For now, return all lines (scrollback can be added later if needed)
 	return lines
 }
 
@@ -319,13 +285,13 @@ func (w *Window) GetCurrentLine() string {
 	w.mutex.RLock()
 	defer w.mutex.RUnlock()
 
-	lines := w.splitIntoLines(w.rawBuffer)
+	lines := w.terminal.GetLines()
 	if len(lines) == 0 {
 		return ""
 	}
 
 	// Get the last line (most recent)
-	lineIdx := len(lines) - w.scrollback - 1
+	lineIdx := len(lines) - 1
 	if lineIdx < 0 || lineIdx >= len(lines) {
 		return ""
 	}
@@ -344,18 +310,8 @@ func (w *Window) ScrollUp(lines int) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	w.scrollback += lines
-
-	// Limit scrollback to available lines
-	allLines := w.splitIntoLines(w.rawBuffer)
-	maxScrollback := len(allLines) - w.Rect.Height + 1
-	if maxScrollback < 0 {
-		maxScrollback = 0
-	}
-
-	if w.scrollback > maxScrollback {
-		w.scrollback = maxScrollback
-	}
+	// Scrollback disabled for now with terminal emulator
+	// TODO: Add scrollback buffer to terminal emulator
 }
 
 // ScrollDown scrolls the window content down by the given number of lines
@@ -363,14 +319,19 @@ func (w *Window) ScrollDown(lines int) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	w.scrollback -= lines
-	if w.scrollback < 0 {
-		w.scrollback = 0
-	}
+	// Scrollback disabled for now with terminal emulator
+	// TODO: Add scrollback buffer to terminal emulator
 }
 
 // IsPointInside checks if a point (x, y) is inside this window
 func (w *Window) IsPointInside(x, y int) bool {
 	return x >= w.Rect.X && x < w.Rect.X+w.Rect.Width &&
 		y >= w.Rect.Y && y < w.Rect.Y+w.Rect.Height
+}
+
+// GetCursorPosition returns the terminal cursor position (relative to window)
+func (w *Window) GetCursorPosition() (row, col int) {
+	w.mutex.RLock()
+	defer w.mutex.RUnlock()
+	return w.terminal.GetCursorPosition()
 }

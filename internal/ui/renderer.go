@@ -43,6 +43,11 @@ func (r *Renderer) renderWindow(win *window.Window, windowNum int, isActive bool
 	// Draw window content
 	r.drawWindowContent(win)
 
+	// Draw cursor if this is the active window
+	if isActive {
+		r.drawCursor(win)
+	}
+
 	// Always draw status bar (with window number)
 	r.statusBar.Render(r.screen, win, windowNum)
 
@@ -93,6 +98,38 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 
 		for colIdx := 0; colIdx < win.Rect.Width; colIdx++ {
 			r.screen.SetContent(x+colIdx, y, ' ', nil, r.theme.Default())
+		}
+	}
+}
+
+// drawCursor draws the blinking cursor at the terminal cursor position
+func (r *Renderer) drawCursor(win *window.Window) {
+	row, col := win.GetCursorPosition()
+
+	// Convert to screen coordinates
+	screenX := win.Rect.X + col
+	screenY := win.Rect.Y + row
+
+	// Make sure cursor is within window bounds
+	if screenX >= win.Rect.X && screenX < win.Rect.X+win.Rect.Width &&
+		screenY >= win.Rect.Y && screenY < win.Rect.Y+win.Rect.Height-1 { // -1 for status bar
+
+		// Get the current cell content at cursor position
+		mainc, combc, style, width := r.screen.GetContent(screenX, screenY)
+
+		// Apply blinking and reverse video to make cursor visible
+		cursorStyle := style.Reverse(true).Blink(true)
+
+		// If the cell is empty, use a block character
+		if mainc == ' ' || mainc == 0 {
+			mainc = ' '
+		}
+
+		r.screen.SetContent(screenX, screenY, mainc, combc, cursorStyle)
+
+		// Handle wide characters
+		for i := 1; i < width; i++ {
+			r.screen.SetContent(screenX+i, screenY, 0, nil, cursorStyle)
 		}
 	}
 }
