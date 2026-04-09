@@ -1,26 +1,35 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/nutworker/ide/internal/window"
 )
 
 // Renderer handles rendering the IDE to the screen
 type Renderer struct {
-	screen    tcell.Screen
-	theme     *Theme
-	statusBar *StatusBar
-	selection *Selection
+	screen      tcell.Screen
+	theme       *Theme
+	statusBar   *StatusBar
+	selection   *Selection
+	highlighter Highlighter
 }
 
 // NewRenderer creates a new renderer
 func NewRenderer(screen tcell.Screen, theme *Theme, selection *Selection) *Renderer {
 	return &Renderer{
-		screen:    screen,
-		theme:     theme,
-		statusBar: NewStatusBar(theme),
-		selection: selection,
+		screen:      screen,
+		theme:       theme,
+		statusBar:   NewStatusBar(theme),
+		selection:   selection,
+		highlighter: nil, // Will be set via SetHighlighter
 	}
+}
+
+// SetHighlighter sets the syntax highlighter
+func (r *Renderer) SetHighlighter(h Highlighter) {
+	r.highlighter = h
 }
 
 // Render renders all windows and the UI
@@ -67,6 +76,23 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 	startY := win.Rect.Y // Start from top of window
 	maxHeight := win.Rect.Height - 1 // Reserve space for status bar (always present)
 
+	// Check if we should apply syntax highlighting
+	var syntaxStyles StyleMap
+	if r.highlighter != nil && win.State.IsVi && strings.HasSuffix(win.State.Filename, ".go") {
+		// Extract text from visible lines
+		var sourceBuilder strings.Builder
+		for _, line := range lines {
+			for _, cell := range line {
+				sourceBuilder.WriteRune(cell.Rune)
+			}
+			sourceBuilder.WriteRune('\n')
+		}
+		source := []byte(sourceBuilder.String())
+
+		// Get syntax highlighting styles
+		syntaxStyles = r.highlighter.GetStyles(win.State.Filename, source)
+	}
+
 	for lineIdx, line := range lines {
 		if lineIdx >= maxHeight {
 			break
@@ -81,6 +107,16 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 			}
 
 			style := cell.Style
+
+			// Apply syntax highlighting if available
+			if syntaxStyles != nil {
+				if rowStyles, ok := syntaxStyles[lineIdx]; ok {
+					if syntaxStyle, ok := rowStyles[colIdx]; ok {
+						style = syntaxStyle
+					}
+				}
+			}
+
 			// Check if this position is in selection
 			if r.selection != nil && r.selection.IsInSelection(x+colIdx, y) {
 				// Highlight selected text with reverse video

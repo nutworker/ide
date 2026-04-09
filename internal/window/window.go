@@ -260,6 +260,21 @@ func (w *Window) processOutput(data []byte) {
 		for _, cell := range lastLine {
 			lastLineText += string(cell.Rune)
 		}
+
+		// Detect if we've returned to shell (prompt with $ or other shell indicators)
+		if w.State.IsVi {
+			// If we see a shell prompt, we've exited vi
+			if strings.Contains(lastLineText, "$ ") ||
+			   strings.HasSuffix(strings.TrimSpace(lastLineText), "$") ||
+			   strings.Contains(lastLineText, "# ") ||
+			   strings.HasSuffix(strings.TrimSpace(lastLineText), "#") {
+				// We're back in the shell, clear vi state
+				w.State.IsVi = false
+				w.State.Filename = ""
+				w.State.ViMode = ViModeCommand
+			}
+		}
+
 		// Check for vi status line patterns like "filename.txt" or "filename.txt [Modified]"
 		// or line/column indicators
 		if !w.State.IsVi {

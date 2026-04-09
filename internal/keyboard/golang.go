@@ -60,8 +60,8 @@ func (gh *GoModeHandler) Build(sourceWin *window.Window) error {
 	// Give it a moment to initialize
 	time.Sleep(100 * time.Millisecond)
 
-	// Execute build command
-	buildCmd := fmt.Sprintf("go build %s\n", sourceWin.State.Filename)
+	// Execute build command with vet
+	buildCmd := fmt.Sprintf("go vet %s 2>&1 && go build %s 2>&1\n", sourceWin.State.Filename, sourceWin.State.Filename)
 	outputWin.WriteToPTY([]byte(buildCmd))
 
 	return nil

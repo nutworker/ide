@@ -32,3 +32,40 @@ func (t *Theme) StatusBar() tcell.Style {
 func (t *Theme) WindowNum() tcell.Style {
 	return t.windowNumStyle
 }
+
+// Syntax highlighting styles for Go code
+
+// KeywordStyle returns the style for Go keywords (func, if, for, etc.)
+// Bold navy blue - high contrast and professional
+func (t *Theme) KeywordStyle() tcell.Style {
+	return t.defaultStyle.Foreground(tcell.ColorNavy).Bold(true)
+}
+
+// StringStyle returns the style for string literals
+// Bold green - bright and traditional for strings
+func (t *Theme) StringStyle() tcell.Style {
+	return t.defaultStyle.Foreground(tcell.ColorGreen).Bold(true)
+}
+
+// CommentStyle returns the style for comments
+// Bold dark red/maroon - visible but distinguishable from code
+func (t *Theme) CommentStyle() tcell.Style {
+	return t.defaultStyle.Foreground(tcell.ColorMaroon).Bold(true)
+}
+
+// TypeStyle returns the style for type names
+// Bold dark magenta - very distinct and highly visible
+func (t *Theme) TypeStyle() tcell.Style {
+	return t.defaultStyle.Foreground(tcell.ColorDarkMagenta).Bold(true)
+}
+
+// NumberStyle returns the style for numeric literals
+// Bold dark cyan - bright and stands out
+func (t *Theme) NumberStyle() tcell.Style {
+	return t.defaultStyle.Foreground(tcell.ColorDarkCyan).Bold(true)
+}
+
+// FunctionStyle returns the style for function names (default black)
+func (t *Theme) FunctionStyle() tcell.Style {
+	return t.defaultStyle
+}

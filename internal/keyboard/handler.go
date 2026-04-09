@@ -2,6 +2,7 @@ package keyboard
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"code.rocketnine.space/tslocum/cbind"
@@ -129,9 +130,20 @@ func (h *Handler) autoSave(win *window.Window) {
 	win.WriteToPTY([]byte{27})
 	time.Sleep(50 * time.Millisecond)
 
-	// Send :w command
-	win.WriteToPTY([]byte(":w\r"))
-	time.Sleep(100 * time.Millisecond)
+	// For Go files, format with gofmt before saving
+	if strings.HasSuffix(win.State.Filename, ".go") {
+		// Send :!gofmt -w % command (format file in place)
+		win.WriteToPTY([]byte(":!gofmt -w %\r"))
+		time.Sleep(200 * time.Millisecond)
+
+		// Reload the file to see formatted changes
+		win.WriteToPTY([]byte(":e!\r"))
+		time.Sleep(100 * time.Millisecond)
+	} else {
+		// Send :w command for non-Go files
+		win.WriteToPTY([]byte(":w\r"))
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Mark as saved
 	win.State.IsDirty = false

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/nutworker/ide/internal/golang"
 	"github.com/nutworker/ide/internal/keyboard"
 	"github.com/nutworker/ide/internal/ui"
 	"github.com/nutworker/ide/internal/window"
@@ -89,6 +90,10 @@ func New() (*App, error) {
 
 	// Create renderer with selection support
 	renderer := ui.NewRenderer(screen, theme, selection)
+
+	// Create syntax highlighter for Go
+	highlighter := golang.NewHighlighter(theme)
+	renderer.SetHighlighter(highlighter)
 
 	app := &App{
 		screen:        screen,

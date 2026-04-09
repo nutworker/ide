@@ -53,12 +53,13 @@ func (m ViMode) String() string {
 
 // WindowState tracks the state of a window
 type WindowState struct {
-	IsVi      bool
-	ViMode    ViMode
-	Filename  string
-	CursorRow int
-	CursorCol int
-	IsDirty   bool
+	IsVi            bool
+	ViMode          ViMode
+	Filename        string
+	CursorRow       int
+	CursorCol       int
+	IsDirty         bool
+	FileContentHash string // Hash of file content for cache invalidation
 }
 
 // NewWindowState creates a new window state
