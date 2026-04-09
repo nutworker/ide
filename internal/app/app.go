@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/nutworker/ide/internal/keyboard"
@@ -30,6 +31,12 @@ type App struct {
 	wordAnchorEnd     int  // Original word end position (screen coords)
 	wordAnchorY       int  // Original word line position
 	wordAnchorWinID   int  // Window ID for anchor
+	promptActive      bool
+	promptText        string
+	promptInput       string
+	promptCallback    func(string) // Called when user presses Enter
+	completionMatches []string     // Current completion candidates
+	completionPrefix  string       // Common prefix for completions
 }
 
 // New creates a new application
@@ -96,6 +103,10 @@ func New() (*App, error) {
 		mousePressed:  false,
 	}
 
+	// Set prompt function for keyboard handler
+	keyHandler.SetPromptFunc(app.showPrompt)
+	keyHandler.SetRestartFunc(app.restartWindowPTY)
+
 	return app, nil
 }
 
@@ -104,7 +115,7 @@ func (a *App) Run() error {
 	defer a.cleanup()
 
 	// Initial render
-	a.renderer.Render(a.wm)
+	a.renderer.Render(a.wm, a.promptActive, a.promptText, a.promptInput, a.completionMatches)
 
 	// Event channels
 	screenEvents := make(chan tcell.Event)
@@ -136,7 +147,7 @@ func (a *App) Run() error {
 		}
 
 		// Render after each event
-		a.renderer.Render(a.wm)
+		a.renderer.Render(a.wm, a.promptActive, a.promptText, a.promptInput, a.completionMatches)
 	}
 }
 
@@ -144,6 +155,12 @@ func (a *App) Run() error {
 func (a *App) handleScreenEvent(ev tcell.Event) {
 	switch ev := ev.(type) {
 	case *tcell.EventKey:
+		// If prompt is active, handle prompt input
+		if a.promptActive {
+			a.handlePromptKey(ev)
+			return
+		}
+
 		// Handle Ctrl-Shift-C (copy)
 		if ev.Key() == tcell.KeyCtrlC && ev.Modifiers()&tcell.ModShift != 0 {
 			a.handleCopy()
@@ -156,10 +173,14 @@ func (a *App) handleScreenEvent(ev tcell.Event) {
 			return
 		}
 
-		// Handle Ctrl-P (paste)
+		// Handle Ctrl-P (paste) - but not in vi mode
 		if ev.Key() == tcell.KeyCtrlP {
-			a.handlePaste()
-			return
+			activeWin := a.wm.GetActiveWindow()
+			if activeWin == nil || !activeWin.State.IsVi {
+				a.handlePaste()
+				return
+			}
+			// In vi mode, pass Ctrl-P through to vi
 		}
 
 		if ev.Key() == tcell.KeyCtrlC {
@@ -178,6 +199,11 @@ func (a *App) handleScreenEvent(ev tcell.Event) {
 		if processedEv != nil {
 			activeWin := a.wm.GetActiveWindow()
 			if activeWin != nil {
+				// Track vi mode changes for status bar
+				if activeWin.State.IsVi {
+					a.trackViMode(activeWin, processedEv)
+				}
+
 				// Convert key event to bytes
 				data := keyEventToBytes(processedEv)
 				if len(data) > 0 {
@@ -272,6 +298,15 @@ func (a *App) handleMouseEvent(ev *tcell.EventMouse) {
 	if a.mousePressed && buttons == tcell.ButtonNone {
 		a.mousePressed = false
 		a.wordSelectMode = false // Reset word selection mode
+
+		// Auto-copy selection to clipboard on mouse release
+		if a.selection.Active {
+			win := a.wm.GetWindowByID(a.selection.WindowID)
+			if win != nil {
+				a.clipboard = a.selection.GetSelectedText(win)
+			}
+		}
+
 		// Selection is now complete - keep it visible
 		return
 	}
@@ -481,8 +516,47 @@ func (a *App) handlePaste() {
 
 // handlePTYEvent handles PTY output events
 func (a *App) handlePTYEvent(pev window.PTYEvent) {
+	win := a.wm.GetWindowByID(pev.WindowID)
+	if win == nil {
+		return
+	}
+
+	// Ignore events from old PTY generations (stale reader goroutines)
+	if pev.Generation != win.Generation {
+		return
+	}
+
 	if pev.Err != nil {
-		// PTY closed or error - could handle window cleanup here
+		// PTY closed or error - only auto-restart if reader is still active
+		// (prevents race with manual restart from keyboard handler)
+		if a.activeReaders[pev.WindowID] {
+			// Increment generation
+			win.Generation++
+
+			// Check if we should pop from file stack (vi exited)
+			if win.State.IsVi && len(win.FileStack) > 0 {
+				// Pop the previous file from stack
+				prevFile := win.FileStack[len(win.FileStack)-1]
+				win.FileStack = win.FileStack[:len(win.FileStack)-1]
+
+				// Reset state
+				win.State = window.NewWindowState()
+
+				// Reopen previous file
+				win.StartPTY("vi", "-n", prevFile)
+
+				// Set state immediately
+				win.State.IsVi = true
+				win.State.Filename = prevFile
+				win.State.ViMode = window.ViModeCommand
+			} else {
+				// No file history - restart bash
+				win.StartPTY("/bin/bash")
+			}
+
+			// Restart the reader for this window
+			go win.ReadPTY(a.ptyEvents)
+		}
 		return
 	}
 
@@ -504,6 +578,235 @@ func (a *App) ensurePTYReaders() {
 func (a *App) cleanup() {
 	a.wm.CloseAll()
 	a.screen.Fini()
+}
+
+// trackViMode tracks vi mode changes based on keyboard input
+func (a *App) trackViMode(win *window.Window, ev *tcell.EventKey) {
+	// ESC key switches to command mode
+	if ev.Key() == tcell.KeyEscape {
+		win.State.ViMode = window.ViModeCommand
+		return
+	}
+
+	// In command mode, check for keys that enter insert mode
+	if win.State.ViMode == window.ViModeCommand && ev.Key() == tcell.KeyRune {
+		r := ev.Rune()
+		// i, a, o, O, I, A, s, S, C, c enter insert mode
+		if r == 'i' || r == 'a' || r == 'o' || r == 'O' ||
+		   r == 'I' || r == 'A' || r == 's' || r == 'S' ||
+		   r == 'C' || r == 'c' {
+			win.State.ViMode = window.ViModeInsert
+		}
+	}
+}
+
+// showPrompt shows a prompt at the bottom of the screen for user input
+func (a *App) showPrompt(promptText string, callback func(string)) {
+	a.promptActive = true
+	a.promptText = promptText
+	a.promptInput = ""
+	a.promptCallback = callback
+}
+
+// handlePromptKey handles keyboard input when prompt is active
+func (a *App) handlePromptKey(ev *tcell.EventKey) {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		// Cancel prompt
+		a.promptActive = false
+		a.promptInput = ""
+		a.promptCallback = nil
+		a.completionMatches = nil
+
+	case tcell.KeyEnter:
+		// Accept input
+		if a.promptCallback != nil {
+			a.promptCallback(a.promptInput)
+		}
+		a.promptActive = false
+		a.promptInput = ""
+		a.promptCallback = nil
+		a.completionMatches = nil
+
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		// Delete last character
+		if len(a.promptInput) > 0 {
+			a.promptInput = a.promptInput[:len(a.promptInput)-1]
+			// Clear completion matches on edit
+			a.completionMatches = nil
+		}
+
+	case tcell.KeyTab:
+		// Trigger completion
+		a.handleCompletion()
+
+	case tcell.KeyRune:
+		// Add character to input
+		a.promptInput += string(ev.Rune())
+		// Clear completion matches on edit
+		a.completionMatches = nil
+	}
+}
+
+// GetPromptState returns the current prompt state for rendering
+func (a *App) GetPromptState() (active bool, text string, input string) {
+	return a.promptActive, a.promptText, a.promptInput
+}
+
+// handleCompletion handles Tab completion for file paths
+func (a *App) handleCompletion() {
+	input := a.promptInput
+
+	// Parse the input to get directory and prefix
+	dir := "."
+	prefix := input
+
+	// Find the last slash to split directory and filename
+	lastSlash := -1
+	for i := len(input) - 1; i >= 0; i-- {
+		if input[i] == '/' {
+			lastSlash = i
+			break
+		}
+	}
+
+	if lastSlash >= 0 {
+		dir = input[:lastSlash+1]
+		prefix = input[lastSlash+1:]
+		// Handle empty directory (just "/")
+		if dir == "" {
+			dir = "/"
+		}
+	}
+
+	// Expand ~ to home directory
+	if len(dir) > 0 && dir[0] == '~' {
+		home := os.Getenv("HOME")
+		if home != "" {
+			dir = home + dir[1:]
+		}
+	}
+
+	// Read directory entries
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	// Find matches
+	var matches []string
+	for _, entry := range entries {
+		name := entry.Name()
+		// Skip hidden files unless prefix starts with .
+		if len(prefix) == 0 && len(name) > 0 && name[0] == '.' {
+			continue
+		}
+		// Check if name starts with prefix
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			fullName := name
+			// Add trailing slash for directories
+			if entry.IsDir() {
+				fullName += "/"
+			}
+			matches = append(matches, fullName)
+		}
+	}
+
+	if len(matches) == 0 {
+		// No matches - do nothing
+		return
+	}
+
+	if len(matches) == 1 {
+		// Single match - complete it
+		if lastSlash >= 0 {
+			a.promptInput = input[:lastSlash+1] + matches[0]
+		} else {
+			a.promptInput = matches[0]
+		}
+		a.completionMatches = nil
+	} else {
+		// Multiple matches - find common prefix and show candidates
+		commonPrefix := findCommonPrefix(matches)
+
+		if commonPrefix != prefix {
+			// We can complete to common prefix
+			if lastSlash >= 0 {
+				a.promptInput = input[:lastSlash+1] + commonPrefix
+			} else {
+				a.promptInput = commonPrefix
+			}
+		}
+
+		// Store matches to display
+		a.completionMatches = matches
+		a.completionPrefix = commonPrefix
+	}
+}
+
+// findCommonPrefix finds the longest common prefix of a slice of strings
+func findCommonPrefix(strs []string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	if len(strs) == 1 {
+		return strs[0]
+	}
+
+	prefix := strs[0]
+	for _, s := range strs[1:] {
+		// Find common prefix between current prefix and s
+		i := 0
+		for i < len(prefix) && i < len(s) && prefix[i] == s[i] {
+			i++
+		}
+		prefix = prefix[:i]
+		if prefix == "" {
+			break
+		}
+	}
+	return prefix
+}
+
+// restartWindowPTY restarts a window's PTY with a new command
+func (a *App) restartWindowPTY(win *window.Window, command string, args ...string) error {
+	// Increment generation to invalidate old PTY reader events
+	win.Generation++
+
+	// Reset window state
+	win.State = window.NewWindowState()
+
+	// Close current PTY
+	if win.PTY != nil {
+		win.PTY.Close()
+	}
+	if win.Cmd != nil && win.Cmd.Process != nil {
+		win.Cmd.Process.Kill()
+	}
+
+	// Start new PTY
+	if err := win.StartPTY(command, args...); err != nil {
+		return err
+	}
+
+	// If opening vi with a file, set state immediately
+	if command == "vi" && len(args) > 0 {
+		// Find the filename (skip flags like -n)
+		for _, arg := range args {
+			if arg != "" && arg[0] != '-' {
+				win.State.IsVi = true
+				win.State.Filename = arg
+				win.State.ViMode = window.ViModeCommand
+				break
+			}
+		}
+	}
+
+	// Restart PTY reader
+	a.activeReaders[win.ID] = true
+	go win.ReadPTY(a.ptyEvents)
+
+	return nil
 }
 
 // keyEventToBytes converts a tcell key event to bytes for PTY input
@@ -553,16 +856,48 @@ func keyEventToBytes(ev *tcell.EventKey) []byte {
 		return []byte{27, '[', '2', '~'}
 	case tcell.KeyCtrlA:
 		return []byte{1}
+	case tcell.KeyCtrlB:
+		return []byte{2}
+	case tcell.KeyCtrlD:
+		return []byte{4}
 	case tcell.KeyCtrlE:
 		return []byte{5}
-	case tcell.KeyCtrlU:
-		return []byte{21}
+	case tcell.KeyCtrlF:
+		return []byte{6}
 	case tcell.KeyCtrlK:
 		return []byte{11}
-	case tcell.KeyCtrlW:
-		return []byte{23}
 	case tcell.KeyCtrlL:
 		return []byte{12}
+	case tcell.KeyCtrlN:
+		return []byte{14}
+	case tcell.KeyCtrlU:
+		return []byte{21}
+	case tcell.KeyCtrlW:
+		return []byte{23}
+	case tcell.KeyF1:
+		return []byte{27, 'O', 'P'}
+	case tcell.KeyF2:
+		return []byte{27, 'O', 'Q'}
+	case tcell.KeyF3:
+		return []byte{27, 'O', 'R'}
+	case tcell.KeyF4:
+		return []byte{27, 'O', 'S'}
+	case tcell.KeyF5:
+		return []byte{27, '[', '1', '5', '~'}
+	case tcell.KeyF6:
+		return []byte{27, '[', '1', '7', '~'}
+	case tcell.KeyF7:
+		return []byte{27, '[', '1', '8', '~'}
+	case tcell.KeyF8:
+		return []byte{27, '[', '1', '9', '~'}
+	case tcell.KeyF9:
+		return []byte{27, '[', '2', '0', '~'}
+	case tcell.KeyF10:
+		return []byte{27, '[', '2', '1', '~'}
+	case tcell.KeyF11:
+		return []byte{27, '[', '2', '3', '~'}
+	case tcell.KeyF12:
+		return []byte{27, '[', '2', '4', '~'}
 	default:
 		return []byte{}
 	}

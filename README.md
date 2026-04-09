@@ -5,12 +5,14 @@ A lightweight terminal-based IDE with Emacs-like appearance, designed for Go pro
 ## Features
 
 - **Emacs-like UI**: White background with black text
-- **Vi integration**: Full vi editor support with status bar
+- **Vi integration**: Full vi editor support with live status bar (cursor position, mode)
 - **Window management**: Split windows horizontally/vertically (up to 8)
+- **File navigation**: Emacs-style find-file (`ALT+F`) with Tab completion and history
 - **Go language support**: Build, run, and navigate compilation errors
 - **Keyboard-driven**: ALT-based commands for all IDE functions
 - **Auto-save**: Files are automatically saved before build/run commands
-- **Mouse scrolling**: Scroll through shell and output windows with mouse wheel
+- **Mouse support**: Text selection, copy/paste, and scrolling
+- **Smart scrolling**: Full vi scrolling support (Ctrl-F, Ctrl-B, arrows)
 
 ## Quick Start
 
@@ -22,14 +24,18 @@ go build -o ide
 ./ide
 
 # In the IDE:
-# - Open a file: vi test.go
+# - Open a file: ALT+f (then type filename with Tab completion)
+# - Or: vi test.go
 # - Build: ALT+b
 # - Run: ALT+r
 # - Split window: ALT+h (horizontal) or ALT+v (vertical)
 # - Quit: ALT+q
 ```
 
-See [USAGE.md](USAGE.md) for detailed documentation.
+## Documentation
+
+- [USAGE.md](USAGE.md) - Detailed usage guide with examples
+- [FEATURES.md](FEATURES.md) - Complete feature list and technical details
 
 ## Requirements
 
@@ -41,6 +47,7 @@ See [USAGE.md](USAGE.md) for detailed documentation.
 
 | Command | Function |
 |---------|----------|
+| ALT+f | Find/open file (with Tab completion) |
 | ALT+h | Split window horizontally |
 | ALT+v | Split window vertically |
 | ALT+x | Close current window |
@@ -49,6 +56,8 @@ See [USAGE.md](USAGE.md) for detailed documentation.
 | ALT+b | Build current Go file |
 | ALT+r | Run current Go file |
 | ALT+q | Save all and quit |
+| Ctrl+Shift+C | Copy selection to clipboard |
+| Ctrl+P | Paste from clipboard |
 
 ## License
 

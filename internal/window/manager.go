@@ -2,6 +2,7 @@ package window
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -124,13 +125,21 @@ func (m *Manager) SplitActive(splitType SplitType, command string, args ...strin
 
 	// If splitting a vi window, use the same file in the new window
 	// Otherwise, use the provided command (default is bash)
-	if activeWin.State.IsVi && command == "/bin/bash" {
-		command = "vi"
-		if activeWin.State.Filename != "" {
-			args = []string{activeWin.State.Filename}
-		} else {
-			args = []string{}
+
+	// Debug logging
+	if f, err := os.OpenFile("/tmp/split-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "Split: IsVi=%v Filename=%s Command=%s\n", activeWin.State.IsVi, activeWin.State.Filename, command)
+		if activeWin.Cmd != nil {
+			fmt.Fprintf(f, "  Cmd.Path=%s Args=%v\n", activeWin.Cmd.Path, activeWin.Cmd.Args)
 		}
+		f.Close()
+	}
+
+	// Check if vi is running based on State
+	if activeWin.State.IsVi && activeWin.State.Filename != "" && command == "/bin/bash" {
+		command = "vi"
+		// Use -n flag to disable swap file (no swap file warning when opening same file)
+		args = []string{"-n", activeWin.State.Filename}
 	}
 
 	if err := newWindow.StartPTY(command, args...); err != nil {

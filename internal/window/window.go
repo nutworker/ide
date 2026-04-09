@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +24,9 @@ type Window struct {
 	State       *WindowState
 	Rect        Rect
 	ProcessType ProcessType
-	SourceFile  string // For build/run output windows
+	SourceFile  string   // For build/run output windows
+	Generation  int      // PTY session generation (incremented on restart)
+	FileStack   []string // Stack of previously opened files (for Alt-F history)
 
 	// Terminal emulator
 	terminal   *ptyparser.Terminal
@@ -180,9 +183,10 @@ func (w *Window) ResizePTY() error {
 
 // PTYEvent represents output from a PTY
 type PTYEvent struct {
-	WindowID int
-	Data     []byte
-	Err      error
+	WindowID   int
+	Generation int
+	Data       []byte
+	Err        error
 }
 
 // ReadPTY reads from the PTY and sends events to the channel
@@ -190,6 +194,9 @@ func (w *Window) ReadPTY(events chan<- PTYEvent) {
 	if w.PTY == nil {
 		return
 	}
+
+	// Capture the generation at the start of this reader
+	generation := w.Generation
 
 	reader := bufio.NewReader(w.PTY)
 	buf := make([]byte, 4096)
@@ -202,8 +209,9 @@ func (w *Window) ReadPTY(events chan<- PTYEvent) {
 
 			// Send event
 			events <- PTYEvent{
-				WindowID: w.ID,
-				Data:     data,
+				WindowID:   w.ID,
+				Generation: generation,
+				Data:       data,
 			}
 
 			// Process the data internally
@@ -213,8 +221,9 @@ func (w *Window) ReadPTY(events chan<- PTYEvent) {
 		if err != nil {
 			if err != io.EOF {
 				events <- PTYEvent{
-					WindowID: w.ID,
-					Err:      err,
+					WindowID:   w.ID,
+					Generation: generation,
+					Err:        err,
 				}
 			}
 			return
@@ -241,8 +250,46 @@ func (w *Window) processOutput(data []byte) {
 		}
 	}
 
+	// Alternative vi detection: check if the last line looks like a vi status line
+	// Vi status lines typically contain filename and line/column info
+	// This is a heuristic approach since vi doesn't always set terminal title
+	lines := w.terminal.GetLines()
+	if len(lines) > 0 {
+		lastLine := lines[len(lines)-1]
+		lastLineText := ""
+		for _, cell := range lastLine {
+			lastLineText += string(cell.Rune)
+		}
+		// Check for vi status line patterns like "filename.txt" or "filename.txt [Modified]"
+		// or line/column indicators
+		if !w.State.IsVi {
+			// Simple heuristic: if last line contains quotes and "lines" or has format indicators
+			if (strings.Contains(lastLineText, "\"") && (strings.Contains(lastLineText, "lines") || strings.Contains(lastLineText, "L,") || strings.Contains(lastLineText, "C"))) {
+				// Extract filename from status line (between quotes)
+				if start := strings.Index(lastLineText, "\""); start >= 0 {
+					if end := strings.Index(lastLineText[start+1:], "\""); end >= 0 {
+						filename := lastLineText[start+1 : start+1+end]
+						if filename != "" && !strings.Contains(filename, " ") {
+							w.State.Filename = filename
+							w.State.IsVi = true
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Write data to terminal emulator
 	w.terminal.Write(data)
+
+	// Sync cursor position from terminal emulator
+	// Vi doesn't always send cursor position reports, so we use the terminal's tracked position
+	if w.State.IsVi {
+		row, col := w.terminal.GetCursorPosition()
+		// Terminal uses 0-based, vi status shows 1-based
+		w.State.CursorRow = row + 1
+		w.State.CursorCol = col + 1
+	}
 }
 
 // GetLines returns the visible lines for rendering

@@ -24,7 +24,7 @@ func NewRenderer(screen tcell.Screen, theme *Theme, selection *Selection) *Rende
 }
 
 // Render renders all windows and the UI
-func (r *Renderer) Render(wm *window.Manager) {
+func (r *Renderer) Render(wm *window.Manager, promptActive bool, promptText string, promptInput string, completionMatches []string) {
 	r.screen.Clear()
 
 	windows := wm.GetWindows()
@@ -32,24 +32,29 @@ func (r *Renderer) Render(wm *window.Manager) {
 
 	// Render each window
 	for idx, win := range windows {
-		r.renderWindow(win, idx+1, win == activeWin)
+		r.renderWindow(win, idx+1, win == activeWin, promptActive, promptText, promptInput, completionMatches)
 	}
 
 	r.screen.Show()
 }
 
 // renderWindow renders a single window
-func (r *Renderer) renderWindow(win *window.Window, windowNum int, isActive bool) {
+func (r *Renderer) renderWindow(win *window.Window, windowNum int, isActive bool, promptActive bool, promptText string, promptInput string, completionMatches []string) {
 	// Draw window content
 	r.drawWindowContent(win)
 
-	// Draw cursor if this is the active window
-	if isActive {
+	// Draw cursor if this is the active window (and prompt is not active)
+	if isActive && !promptActive {
 		r.drawCursor(win)
 	}
 
-	// Always draw status bar (with window number)
-	r.statusBar.Render(r.screen, win, windowNum)
+	// Draw status bar or prompt
+	if isActive && promptActive {
+		r.renderPrompt(win, promptText, promptInput, completionMatches)
+	} else {
+		// Always draw status bar (with window number)
+		r.statusBar.Render(r.screen, win, windowNum)
+	}
 
 	// Draw borders between windows
 	r.drawWindowBorder(win)
@@ -157,5 +162,81 @@ func (r *Renderer) drawWindowBorder(win *window.Window) {
 				r.screen.SetContent(x, bottomY, '─', nil, style)
 			}
 		}
+	}
+}
+
+// renderPrompt renders a prompt at the bottom of the window (like Emacs minibuffer)
+func (r *Renderer) renderPrompt(win *window.Window, promptText string, promptInput string, completionMatches []string) {
+	statusY := win.Rect.Y + win.Rect.Height - 1
+	style := r.theme.Default().Reverse(true)
+
+	// If we have completion matches, show them above the prompt
+	if len(completionMatches) > 0 {
+		r.renderCompletions(win, completionMatches)
+	}
+
+	// Build the full prompt string
+	fullPrompt := promptText + promptInput
+
+	// Draw the prompt
+	x := win.Rect.X
+	for i, ch := range fullPrompt {
+		if i >= win.Rect.Width {
+			break
+		}
+		r.screen.SetContent(x+i, statusY, ch, nil, style)
+	}
+
+	// Fill remaining space
+	for i := len(fullPrompt); i < win.Rect.Width; i++ {
+		r.screen.SetContent(x+i, statusY, ' ', nil, style)
+	}
+
+	// Position cursor at end of input
+	cursorX := x + len(fullPrompt)
+	if cursorX < x+win.Rect.Width {
+		mainc, combc, _, width := r.screen.GetContent(cursorX, statusY)
+		cursorStyle := style.Blink(true)
+		r.screen.SetContent(cursorX, statusY, mainc, combc, cursorStyle)
+		for i := 1; i < width; i++ {
+			r.screen.SetContent(cursorX+i, statusY, 0, nil, cursorStyle)
+		}
+	}
+}
+
+// renderCompletions renders completion candidates above the prompt
+func (r *Renderer) renderCompletions(win *window.Window, matches []string) {
+	// Show up to 8 matches, starting from the bottom up (above status line)
+	maxMatches := 8
+	if len(matches) > maxMatches {
+		matches = matches[:maxMatches]
+	}
+
+	// Start from the line above the status bar
+	y := win.Rect.Y + win.Rect.Height - 2
+	x := win.Rect.X
+	style := r.theme.Default()
+
+	// Display matches from bottom to top
+	for i := len(matches) - 1; i >= 0; i-- {
+		if y < win.Rect.Y {
+			break
+		}
+
+		match := matches[i]
+		// Show match with some padding
+		text := "  " + match
+
+		// Draw the match
+		for col := 0; col < len(text) && col < win.Rect.Width; col++ {
+			r.screen.SetContent(x+col, y, rune(text[col]), nil, style)
+		}
+
+		// Fill remaining space
+		for col := len(text); col < win.Rect.Width; col++ {
+			r.screen.SetContent(x+col, y, ' ', nil, style)
+		}
+
+		y--
 	}
 }

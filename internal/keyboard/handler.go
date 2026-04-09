@@ -15,6 +15,8 @@ type Handler struct {
 	wm          *window.Manager
 	quitChan    chan struct{}
 	goHandler   *GoModeHandler
+	promptFunc  func(string, func(string)) // Function to show prompt
+	restartFunc func(*window.Window, string, ...string) error // Function to restart a window's PTY
 }
 
 // NewHandler creates a new keyboard handler
@@ -78,6 +80,12 @@ func (h *Handler) setupBindings() {
 	// Quit
 	h.cbind.Set("Alt+q", func(ev *tcell.EventKey) *tcell.EventKey {
 		h.handleQuit()
+		return nil
+	})
+
+	// Find/Open file
+	h.cbind.Set("Alt+f", func(ev *tcell.EventKey) *tcell.EventKey {
+		h.handleFindFile()
 		return nil
 	})
 }
@@ -195,6 +203,35 @@ func (h *Handler) handleQuit() {
 	close(h.quitChan)
 }
 
+func (h *Handler) handleFindFile() {
+	activeWin := h.wm.GetActiveWindow()
+	if activeWin == nil {
+		return
+	}
+
+	// Auto-save current file if in vi mode
+	if activeWin.State.IsVi && activeWin.State.Filename != "" {
+		h.autoSave(activeWin)
+	}
+
+	// Show prompt for filename
+	if h.promptFunc != nil && h.restartFunc != nil {
+		h.promptFunc("Find file: ", func(filename string) {
+			if filename == "" {
+				return
+			}
+
+			// Push current file to stack if we're in vi mode
+			if activeWin.State.IsVi && activeWin.State.Filename != "" {
+				activeWin.FileStack = append(activeWin.FileStack, activeWin.State.Filename)
+			}
+
+			// Restart the window with vi opening the new file
+			h.restartFunc(activeWin, "vi", "-n", filename)
+		})
+	}
+}
+
 // ParseKeyString converts a key string like "Alt+h" to tcell.EventKey
 func ParseKeyString(s string) *tcell.EventKey {
 	// This is handled by cbind internally
@@ -204,4 +241,14 @@ func ParseKeyString(s string) *tcell.EventKey {
 // GetGoHandler returns the Go mode handler
 func (h *Handler) GetGoHandler() *GoModeHandler {
 	return h.goHandler
+}
+
+// SetPromptFunc sets the function to show prompts
+func (h *Handler) SetPromptFunc(f func(string, func(string))) {
+	h.promptFunc = f
+}
+
+// SetRestartFunc sets the function to restart a window's PTY
+func (h *Handler) SetRestartFunc(f func(*window.Window, string, ...string) error) {
+	h.restartFunc = f
 }
