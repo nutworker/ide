@@ -1,0 +1,33 @@
+# Binaries
+ide
+
+# Backup files
+*.backup
+*~
+
+# Temporary files
+plan.md
+.wsl_ignore
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Go coverage files
+*.out
+*.prof
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
