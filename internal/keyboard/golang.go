@@ -2,6 +2,7 @@ package keyboard
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,17 +13,19 @@ import (
 
 // GoModeHandler handles Go-specific functionality
 type GoModeHandler struct {
-	wm           *window.Manager
-	errorParser  *GoErrorParser
-	buildWindows map[int]int // Maps build output window ID to source window ID
+	wm              *window.Manager
+	errorParser     *GoErrorParser
+	buildWindows    map[int]int // Maps build output window ID to source window ID
+	sourceBuildWins map[int]int // Maps source window ID to build output window ID
 }
 
 // NewGoModeHandler creates a new Go mode handler
 func NewGoModeHandler(wm *window.Manager) *GoModeHandler {
 	return &GoModeHandler{
-		wm:           wm,
-		errorParser:  NewGoErrorParser(),
-		buildWindows: make(map[int]int),
+		wm:              wm,
+		errorParser:     NewGoErrorParser(),
+		buildWindows:    make(map[int]int),
+		sourceBuildWins: make(map[int]int),
 	}
 }
 
@@ -32,37 +35,57 @@ func (gh *GoModeHandler) Build(sourceWin *window.Window) error {
 		return fmt.Errorf("not a Go file")
 	}
 
-	// Determine available space for output window
-	screenW, screenH := 80, 24 // Default, will be updated by window manager
-	if len(gh.wm.GetWindows()) > 0 {
-		// Use a portion of screen for output
-		screenW = sourceWin.Rect.Width
-		screenH = sourceWin.Rect.Height / 3
-		if screenH < 5 {
-			screenH = 5
+	var outputWin *window.Window
+	var err error
+
+	// Check if we already have a build window for this source
+	if existingBuildWinID, exists := gh.sourceBuildWins[sourceWin.ID]; exists {
+		outputWin = gh.wm.GetWindowByID(existingBuildWinID)
+		if outputWin != nil {
+			// Reuse existing build window - clear it first
+			outputWin.WriteToPTY([]byte("clear\n"))
+			time.Sleep(50 * time.Millisecond)
+			outputWin.State.SelectedLine = 0 // Reset to first line
 		}
 	}
 
-	outputRect := window.NewRect(0, 0, screenW, screenH)
+	// If no existing build window, create a new one below the source window
+	if outputWin == nil {
+		// Split the source window horizontally (build window below)
+		// Use SplitActiveForced to ensure we get bash, not vi
+		err = gh.wm.SplitActiveForced(window.SplitHorizontal, "/bin/bash")
+		if err != nil {
+			return err
+		}
 
-	// Create output window with bash
-	outputWin, err := gh.wm.CreateWindow(outputRect, "/bin/bash")
-	if err != nil {
-		return err
+		// The new window is now active and is the last window
+		outputWin = gh.wm.GetActiveWindow()
+		if outputWin == nil {
+			return fmt.Errorf("failed to get build output window")
+		}
+
+		outputWin.ProcessType = window.ProcessBuildOutput
+		outputWin.SourceFile = sourceWin.State.Filename
+		outputWin.State.SelectedLine = 0 // Start at first line
+
+		// Track the relationship (bidirectional)
+		gh.buildWindows[outputWin.ID] = sourceWin.ID
+		gh.sourceBuildWins[sourceWin.ID] = outputWin.ID
+
+		// Switch back to source window initially
+		gh.wm.SetActiveByID(sourceWin.ID)
+
+		// Give bash a moment to initialize
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	outputWin.ProcessType = window.ProcessBuildOutput
-	outputWin.SourceFile = sourceWin.State.Filename
-
-	// Track the relationship
-	gh.buildWindows[outputWin.ID] = sourceWin.ID
-
-	// Give it a moment to initialize
-	time.Sleep(100 * time.Millisecond)
-
-	// Execute build command with vet
-	buildCmd := fmt.Sprintf("go vet %s 2>&1 && go build %s 2>&1\n", sourceWin.State.Filename, sourceWin.State.Filename)
+	// Execute build command with vet (use ; to run both even if first fails)
+	buildCmd := fmt.Sprintf("go vet %s 2>&1; go build %s 2>&1\n", sourceWin.State.Filename, sourceWin.State.Filename)
 	outputWin.WriteToPTY([]byte(buildCmd))
+
+	// Wait a moment for errors to appear, then switch to build window
+	time.Sleep(200 * time.Millisecond)
+	gh.wm.SetActiveByID(outputWin.ID)
 
 	return nil
 }
@@ -73,28 +96,23 @@ func (gh *GoModeHandler) Run(sourceWin *window.Window) error {
 		return fmt.Errorf("not a Go file")
 	}
 
-	// Determine available space for output window
-	screenW, screenH := 80, 24
-	if len(gh.wm.GetWindows()) > 0 {
-		screenW = sourceWin.Rect.Width
-		screenH = sourceWin.Rect.Height / 3
-		if screenH < 5 {
-			screenH = 5
-		}
-	}
-
-	outputRect := window.NewRect(0, 0, screenW, screenH)
-
-	// Create output window with bash
-	outputWin, err := gh.wm.CreateWindow(outputRect, "/bin/bash")
+	// Split the source window horizontally (run output below)
+	// Use SplitActiveForced to ensure we get bash, not vi
+	err := gh.wm.SplitActiveForced(window.SplitHorizontal, "/bin/bash")
 	if err != nil {
 		return err
+	}
+
+	// The new window is now active and is the last window
+	outputWin := gh.wm.GetActiveWindow()
+	if outputWin == nil {
+		return fmt.Errorf("failed to get run output window")
 	}
 
 	outputWin.ProcessType = window.ProcessRunOutput
 	outputWin.SourceFile = sourceWin.State.Filename
 
-	// Give it a moment to initialize
+	// Give bash a moment to initialize
 	time.Sleep(100 * time.Millisecond)
 
 	// Execute run command
@@ -109,10 +127,27 @@ func (gh *GoModeHandler) HandleEnterInBuildOutput(outputWin *window.Window) {
 	// Get current line
 	line := outputWin.GetCurrentLine()
 
+	// Debug logging
+	if f, err := os.OpenFile("/tmp/enter-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "HandleEnter: line='%s' selectedLine=%d\n", line, outputWin.State.SelectedLine)
+		f.Close()
+	}
+
 	// Parse error
 	compileErr := gh.errorParser.ParseLine(line)
 	if compileErr == nil {
+		// Debug: not an error line
+		if f, err := os.OpenFile("/tmp/enter-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			fmt.Fprintf(f, "  -> Not an error line\n")
+			f.Close()
+		}
 		return // Not an error line
+	}
+
+	// Debug: found error
+	if f, err := os.OpenFile("/tmp/enter-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "  -> Error: file=%s line=%d col=%d\n", compileErr.File, compileErr.Line, compileErr.Column)
+		f.Close()
 	}
 
 	// Find source window
@@ -164,7 +199,9 @@ type GoErrorParser struct {
 func NewGoErrorParser() *GoErrorParser {
 	return &GoErrorParser{
 		// Matches: filename.go:42:15: error message
-		errorRegex: regexp.MustCompile(`^([^:]+):(\d+):(\d+):\s+(.+)$`),
+		// Also handles: vet: filename.go:42:15: error message
+		// Also handles: # command-line-arguments (ignored)
+		errorRegex: regexp.MustCompile(`(?:^|.*:\s+)([^:]+\.go):(\d+):(\d+):\s+(.+)$`),
 	}
 }
 
@@ -192,5 +229,20 @@ func (gep *GoErrorParser) ParseLine(line string) *CompileError {
 		Line:    lineNum,
 		Column:  colNum,
 		Message: matches[4],
+	}
+}
+
+// NotifyWindowClosed cleans up tracking when a window is closed
+func (gh *GoModeHandler) NotifyWindowClosed(windowID int) {
+	// If it's a build window, remove from both maps
+	if sourceWinID, isBuildWin := gh.buildWindows[windowID]; isBuildWin {
+		delete(gh.buildWindows, windowID)
+		delete(gh.sourceBuildWins, sourceWinID)
+	}
+
+	// If it's a source window, remove its build window mapping
+	if buildWinID, hasBuiltWin := gh.sourceBuildWins[windowID]; hasBuiltWin {
+		delete(gh.sourceBuildWins, windowID)
+		delete(gh.buildWindows, buildWinID)
 	}
 }

@@ -104,6 +104,16 @@ func (m *Manager) GetWindowByIndex(idx int) *Window {
 
 // SplitActive splits the active window
 func (m *Manager) SplitActive(splitType SplitType, command string, args ...string) error {
+	return m.splitActiveInternal(splitType, command, false, args...)
+}
+
+// SplitActiveForced splits the active window, forcing the command type (no vi auto-detection)
+func (m *Manager) SplitActiveForced(splitType SplitType, command string, args ...string) error {
+	return m.splitActiveInternal(splitType, command, true, args...)
+}
+
+// splitActiveInternal is the internal implementation for splitting
+func (m *Manager) splitActiveInternal(splitType SplitType, command string, forceCommand bool, args ...string) error {
 	if len(m.windows) >= m.maxWindows {
 		return fmt.Errorf("maximum windows reached")
 	}
@@ -124,19 +134,19 @@ func (m *Manager) SplitActive(splitType SplitType, command string, args ...strin
 	m.nextID++
 
 	// If splitting a vi window, use the same file in the new window
-	// Otherwise, use the provided command (default is bash)
+	// (unless forceCommand is true, e.g., for build/run output windows)
 
 	// Debug logging
 	if f, err := os.OpenFile("/tmp/split-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "Split: IsVi=%v Filename=%s Command=%s\n", activeWin.State.IsVi, activeWin.State.Filename, command)
+		fmt.Fprintf(f, "Split: IsVi=%v Filename=%s Command=%s Force=%v\n", activeWin.State.IsVi, activeWin.State.Filename, command, forceCommand)
 		if activeWin.Cmd != nil {
 			fmt.Fprintf(f, "  Cmd.Path=%s Args=%v\n", activeWin.Cmd.Path, activeWin.Cmd.Args)
 		}
 		f.Close()
 	}
 
-	// Check if vi is running based on State
-	if activeWin.State.IsVi && activeWin.State.Filename != "" && command == "/bin/bash" {
+	// Check if vi is running based on State (only if not forcing command)
+	if !forceCommand && activeWin.State.IsVi && activeWin.State.Filename != "" && command == "/bin/bash" {
 		command = "vi"
 		// Use -n flag to disable swap file (no swap file warning when opening same file)
 		args = []string{"-n", activeWin.State.Filename}

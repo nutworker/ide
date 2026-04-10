@@ -26,7 +26,18 @@ func (sb *StatusBar) Render(screen tcell.Screen, win *window.Window, windowNum i
 	x := win.Rect.X
 
 	var status string
-	if win.State.IsVi {
+	if win.ProcessType == window.ProcessBuildOutput {
+		// Build output: show window number, source file, and selected line
+		status = fmt.Sprintf("[%d] BUILD: %s (line %d) -- Use arrows to navigate, ENTER to jump --",
+			windowNum,
+			win.SourceFile,
+			win.State.SelectedLine+1) // Display as 1-based
+	} else if win.ProcessType == window.ProcessRunOutput {
+		// Run output: show window number and source file
+		status = fmt.Sprintf("[%d] RUN: %s",
+			windowNum,
+			win.SourceFile)
+	} else if win.State.IsVi {
 		// Vi mode: show window number, filename, cursor position, mode
 		status = fmt.Sprintf("[%d] %s [%d,%d] --%s--",
 			windowNum,

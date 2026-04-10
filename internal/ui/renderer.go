@@ -117,6 +117,11 @@ func (r *Renderer) drawWindowContent(win *window.Window) {
 				}
 			}
 
+			// Highlight selected line in build output windows
+			if win.ProcessType == window.ProcessBuildOutput && lineIdx == win.State.SelectedLine {
+				style = style.Reverse(true)
+			}
+
 			// Check if this position is in selection
 			if r.selection != nil && r.selection.IsInSelection(x+colIdx, y) {
 				// Highlight selected text with reverse video

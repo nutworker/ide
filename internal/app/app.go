@@ -197,6 +197,19 @@ func (a *App) handleScreenEvent(ev tcell.Event) {
 			return
 		}
 
+		// Handle arrow keys for build output window navigation
+		activeWin := a.wm.GetActiveWindow()
+		if activeWin != nil && activeWin.ProcessType == window.ProcessBuildOutput {
+			if ev.Key() == tcell.KeyUp {
+				activeWin.MoveSelectedLineUp()
+				return
+			}
+			if ev.Key() == tcell.KeyDown {
+				activeWin.MoveSelectedLineDown()
+				return
+			}
+		}
+
 		// Process through key handler
 		processedEv := a.keyHandler.HandleEvent(ev)
 

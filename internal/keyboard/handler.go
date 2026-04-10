@@ -197,9 +197,17 @@ func (h *Handler) handleRun() {
 }
 
 func (h *Handler) handleCloseWindow() {
-	if err := h.wm.CloseActive(); err != nil {
-		// Error - cannot close (probably last window)
-		// Could show error in status line
+	// Get the window ID before closing
+	activeWin := h.wm.GetActiveWindow()
+	if activeWin != nil {
+		windowID := activeWin.ID
+		if err := h.wm.CloseActive(); err != nil {
+			// Error - cannot close (probably last window)
+			// Could show error in status line
+			return
+		}
+		// Notify Go handler about window closure
+		h.goHandler.NotifyWindowClosed(windowID)
 	}
 }
 

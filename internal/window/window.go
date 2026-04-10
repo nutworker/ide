@@ -352,10 +352,16 @@ func (w *Window) GetCurrentLine() string {
 		return ""
 	}
 
-	// Get the last line (most recent)
-	lineIdx := len(lines) - 1
-	if lineIdx < 0 || lineIdx >= len(lines) {
-		return ""
+	// For build output windows, use the selected line
+	// Otherwise, use the last line (most recent)
+	lineIdx := w.State.SelectedLine
+
+	// Clamp to valid range
+	if lineIdx < 0 {
+		lineIdx = 0
+	}
+	if lineIdx >= len(lines) {
+		lineIdx = len(lines) - 1
 	}
 
 	line := lines[lineIdx]
@@ -365,6 +371,54 @@ func (w *Window) GetCurrentLine() string {
 	}
 
 	return result
+}
+
+// MoveSelectedLineUp moves the selected line up (for build output navigation)
+func (w *Window) MoveSelectedLineUp() {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+
+	if w.State.SelectedLine > 0 {
+		w.State.SelectedLine--
+	}
+}
+
+// MoveSelectedLineDown moves the selected line down (for build output navigation)
+func (w *Window) MoveSelectedLineDown() {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+
+	lines := w.terminal.GetLines()
+	if len(lines) == 0 {
+		return
+	}
+
+	// Find the last non-empty line (search backwards)
+	maxLine := len(lines) - 1
+	for maxLine >= 0 {
+		// Check if line has any non-space content
+		hasContent := false
+		for _, cell := range lines[maxLine] {
+			if cell.Rune != ' ' && cell.Rune != 0 {
+				hasContent = true
+				break
+			}
+		}
+		if hasContent {
+			break
+		}
+		maxLine--
+	}
+
+	// If all lines are empty, stay at 0
+	if maxLine < 0 {
+		maxLine = 0
+	}
+
+	// Only move down if we haven't reached the last non-empty line
+	if w.State.SelectedLine < maxLine {
+		w.State.SelectedLine++
+	}
 }
 
 // ScrollUp scrolls the window content up by the given number of lines

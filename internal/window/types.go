@@ -60,6 +60,7 @@ type WindowState struct {
 	CursorCol       int
 	IsDirty         bool
 	FileContentHash string // Hash of file content for cache invalidation
+	SelectedLine    int    // For build output windows: which line is selected for navigation
 }
 
 // NewWindowState creates a new window state
